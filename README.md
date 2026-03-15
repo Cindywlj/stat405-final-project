@@ -1,14 +1,14 @@
 # STAT 405 Final Project
 
 ## Project Topic
-Bayesian analysis of risk factors for heart disease.
+Bayesian analysis 
 
 ## Research Question
-How do clinical risk factors such as age, cholesterol, and blood pressure influence the probability of heart disease, and does a hierarchical Bayesian model improve inference compared with a standard logistic regression model?
+
 
 ## Team Members
-Your Name
-Partner Name
+Shiyu Jiang 56479256
+Lijie Wang 37325834
 
 ## Repository Structure
 data/  dataset files  
