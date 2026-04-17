@@ -1,0 +1,602 @@
+---
+title: "405project"
+author: "Shiyu Jiang"
+date: "2026-04-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(cmdstanr)
+```
+
+```{r}
+data <- read.csv("data.csv")
+head(data)
+
+age_mean <- mean(data$age)
+data$age_c  <- data$age - age_mean
+data$age_c2 <- data$age_c^2
+```
+
+
+
+
+#simple model
+```{r}
+stan_data_simple <- list(
+  N = nrow(data),
+  AB = data$AB,
+  H = data$H,
+  age_c = data$age_c,
+  age_c2 = data$age_c2
+)
+
+```
+
+
+
+```{r}
+simple_stan_code <- "
+data {
+  int<lower=1> N;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+
+parameters {
+  real beta0;
+  real beta1;
+  real beta2;
+}
+
+model {
+  vector[N] logit_theta;
+
+  beta0 ~ normal(0, 5);
+  beta1 ~ normal(0, 5);
+  beta2 ~ normal(0, 5);
+
+  logit_theta = beta0 + beta1 * age_c + beta2 * age_c2;
+
+  H ~ binomial_logit(AB, logit_theta);
+}
+
+generated quantities {
+  real peak_age_c;
+  int beta1_gt_0;
+  int beta2_lt_0;
+
+  peak_age_c = -beta1 / (2 * beta2);
+  beta1_gt_0 = beta1 > 0 ? 1 : 0;
+  beta2_lt_0 = beta2 < 0 ? 1 : 0;
+}
+"
+```
+
+
+
+```{r}
+writeLines(simple_stan_code, "simple_model.stan")
+
+mod_simple <- cmdstan_model("simple_model.stan")
+
+fit_simple_hmc <- mod_simple$sample(
+  data = list(
+    N = nrow(data),
+    AB = data$AB,
+    H = data$H,
+    age_c = data$age_c,
+    age_c2 = data$age_c2
+  ),
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  refresh = 500,
+  seed = 1
+)
+```
+
+
+#HMC
+
+```{r}
+fit_simple_hmc$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+```
+
+
+```{r}
+draws_simple_hmc <- fit_simple_hmc$draws(
+  variables = c("beta0", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+```
+
+
+```{r}
+draws_simple_hmc$peak_age <- draws_simple_hmc$peak_age_c + age_mean
+```
+
+
+```{r}
+mean(draws_simple_hmc$peak_age)
+quantile(draws_simple_hmc$peak_age, c(0.025, 0.975))
+
+mean(draws_simple_hmc$beta1)
+quantile(draws_simple_hmc$beta1, c(0.025, 0.975))
+
+mean(draws_simple_hmc$beta2)
+quantile(draws_simple_hmc$beta2, c(0.025, 0.975))
+```
+
+```{r}
+mean(draws_simple_hmc$beta1_gt_0)
+mean(draws_simple_hmc$beta2_lt_0)
+```
+
+```{r}
+fit_simple_hmc$diagnostic_summary()
+fit_simple_hmc$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+```
+
+
+
+```{r}
+library(bayesplot)
+library(posterior)
+
+mcmc_trace(
+  as_draws_array(fit_simple_hmc$draws(c("beta0", "beta1", "beta2")))
+)
+```
+
+```{r}
+result_table_hmc <- data.frame(
+  parameter = c("beta1", "beta2", "peak_age"),
+  post_mean = c(
+    mean(draws_simple_hmc$beta1),
+    mean(draws_simple_hmc$beta2),
+    mean(draws_simple_hmc$peak_age)
+  ),
+  lower_95 = c(
+    quantile(draws_simple_hmc$beta1, 0.025),
+    quantile(draws_simple_hmc$beta2, 0.025),
+    quantile(draws_simple_hmc$peak_age, 0.025)
+  ),
+  upper_95 = c(
+    quantile(draws_simple_hmc$beta1, 0.975),
+    quantile(draws_simple_hmc$beta2, 0.975),
+    quantile(draws_simple_hmc$peak_age, 0.975)
+  )
+)
+
+result_table_hmc
+```
+
+
+#VI
+
+```{r}
+
+fit_simple_vi <- mod_simple$variational(
+  seed = 1,
+  refresh = 500,
+  algorithm = "meanfield",
+  output_samples = 1000,
+  data = list(
+    N = nrow(data),
+    AB = data$AB,
+    H = data$H,
+    age_c = data$age_c,
+    age_c2 = data$age_c2
+  )
+)
+
+fit_simple_vi$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+```
+
+#VI posterior
+```{r}
+draws_simple_vi <- fit_simple_vi$draws(
+  variables = c("beta0", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+```
+
+
+```{r}
+draws_simple_vi$peak_age <- draws_simple_vi$peak_age_c + age_mean
+```
+
+
+```{r}
+# beta1
+mean(draws_simple_vi$beta1)
+quantile(draws_simple_vi$beta1, c(0.025, 0.975))
+
+# beta2
+mean(draws_simple_vi$beta2)
+quantile(draws_simple_vi$beta2, c(0.025, 0.975))
+
+# peak age
+mean(draws_simple_vi$peak_age)
+quantile(draws_simple_vi$peak_age, c(0.025, 0.975))
+
+```
+
+
+```{r}
+mean(draws_simple_vi$beta1_gt_0)
+mean(draws_simple_vi$beta2_lt_0)
+```
+
+
+
+#laplace
+
+```{r}
+fit_simple_laplace <- mod_simple$laplace(
+  seed = 123,
+  data = list(
+    N = nrow(data),
+    AB = data$AB,
+    H = data$H,
+    age_c = data$age_c,
+    age_c2 = data$age_c2
+  )
+)
+```
+
+
+```{r}
+fit_simple_laplace$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+```
+
+
+```{r}
+draws_simple_laplace <- fit_simple_laplace$draws(
+  variables = c("beta0", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+```
+
+```{r}
+draws_simple_laplace$peak_age <- draws_simple_laplace$peak_age_c + age_mean
+```
+
+```{r}
+# beta1
+mean(draws_simple_laplace$beta1)
+quantile(draws_simple_laplace$beta1, c(0.025, 0.975))
+
+# beta2
+mean(draws_simple_laplace$beta2)
+quantile(draws_simple_laplace$beta2, c(0.025, 0.975))
+
+# peak age
+mean(draws_simple_laplace$peak_age)
+quantile(draws_simple_laplace$peak_age, c(0.025, 0.975))
+```
+
+```{r}
+mean(draws_simple_laplace$beta1_gt_0)
+mean(draws_simple_laplace$beta2_lt_0)
+```
+
+```{r}
+# =========================
+# Clean result table for Laplace
+# =========================
+
+result_table_laplace <- data.frame(
+  parameter = c("beta1", "beta2", "peak_age"),
+  post_mean = c(
+    mean(draws_simple_laplace$beta1),
+    mean(draws_simple_laplace$beta2),
+    mean(draws_simple_laplace$peak_age)
+  ),
+  lower_95 = c(
+    quantile(draws_simple_laplace$beta1, 0.025),
+    quantile(draws_simple_laplace$beta2, 0.025),
+    quantile(draws_simple_laplace$peak_age, 0.025)
+  ),
+  upper_95 = c(
+    quantile(draws_simple_laplace$beta1, 0.975),
+    quantile(draws_simple_laplace$beta2, 0.975),
+    quantile(draws_simple_laplace$peak_age, 0.975)
+  )
+)
+
+result_table_laplace
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+#model 2
+
+```{r}
+
+# numeric player id for hierarchical model
+data$player_id <- as.integer(factor(data$playerName))
+n_players <- length(unique(data$player_id))
+
+```
+
+```{r}
+stan_data_hier <- list(
+  N = nrow(data),
+  J = n_players,
+  player = data$player_id,
+  AB = data$AB,
+  H = data$H,
+  age_c = data$age_c,
+  age_c2 = data$age_c2
+)
+```
+
+
+
+```{r}
+hier_stan_code <- "
+data {
+  int<lower=1> N;
+  int<lower=1> J;
+  array[N] int<lower=1, upper=J> player;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+
+parameters {
+  real mu_alpha;
+  real<lower=0> sigma_alpha;
+  vector[J] alpha_raw;
+  real beta1;
+  real beta2;
+}
+
+transformed parameters {
+  vector[J] alpha;
+  vector[N] logit_theta;
+
+  alpha = mu_alpha + sigma_alpha * alpha_raw;
+
+  for (n in 1:N) {
+    logit_theta[n] = alpha[player[n]] + beta1 * age_c[n] + beta2 * age_c2[n];
+  }
+}
+
+model {
+  mu_alpha ~ normal(0, 5);
+  sigma_alpha ~ exponential(1);
+  alpha_raw ~ normal(0, 1);
+  beta1 ~ normal(0, 5);
+  beta2 ~ normal(0, 5);
+
+  H ~ binomial_logit(AB, logit_theta);
+}
+
+generated quantities {
+  real peak_age_c;
+  int beta1_gt_0;
+  int beta2_lt_0;
+
+  peak_age_c = -beta1 / (2 * beta2);
+  beta1_gt_0 = beta1 > 0 ? 1 : 0;
+  beta2_lt_0 = beta2 < 0 ? 1 : 0;
+}
+"
+
+
+```
+
+
+```{r}
+writeLines(hier_stan_code, "hier_model.stan")
+
+mod_hier <- cmdstan_model("hier_model.stan")
+```
+#HMC
+
+```{r, message = FALSE, results = 'hide'}
+fit_hier_hmc <- mod_hier$sample(
+  seed = 123,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  data = stan_data_hier
+)
+```
+
+
+
+#VI
+```{r}
+fit_hier_vi <- mod_hier$variational(
+  seed = 123,
+  refresh = 500,
+  algorithm = "meanfield",
+  output_samples = 1000,
+  data = stan_data_hier
+)
+```
+
+
+
+
+
+
+```{r}
+fit_hier_hmc$summary(c("mu_alpha", "sigma_alpha", "beta1", "beta2", "peak_age_c"))
+fit_hier_vi$summary(c("mu_alpha", "sigma_alpha", "beta1", "beta2", "peak_age_c"))
+```
+
+
+
+```{r}
+draws_hier_hmc <- fit_hier_hmc$draws(
+  variables = c("mu_alpha", "sigma_alpha", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+
+draws_hier_vi <- fit_hier_vi$draws(
+  variables = c("mu_alpha", "sigma_alpha", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+```
+
+
+
+```{r}
+draws_hier_hmc$peak_age <- draws_hier_hmc$peak_age_c + age_mean
+draws_hier_vi$peak_age <- draws_hier_vi$peak_age_c + age_mean
+```
+
+
+#HMC
+```{r}
+# beta1
+mean(draws_hier_hmc$beta1)
+quantile(draws_hier_hmc$beta1, c(0.025, 0.975))
+
+# beta2
+mean(draws_hier_hmc$beta2)
+quantile(draws_hier_hmc$beta2, c(0.025, 0.975))
+
+# sigma_alpha
+mean(draws_hier_hmc$sigma_alpha)
+quantile(draws_hier_hmc$sigma_alpha, c(0.025, 0.975))
+
+# peak age
+mean(draws_hier_hmc$peak_age)
+quantile(draws_hier_hmc$peak_age, c(0.025, 0.975))
+
+# posterior probabilities
+mean(draws_hier_hmc$beta1_gt_0)
+mean(draws_hier_hmc$beta2_lt_0)
+```
+
+
+
+```{r}
+# beta1
+mean(draws_hier_vi$beta1)
+quantile(draws_hier_vi$beta1, c(0.025, 0.975))
+
+# beta2
+mean(draws_hier_vi$beta2)
+quantile(draws_hier_vi$beta2, c(0.025, 0.975))
+
+# sigma_alpha
+mean(draws_hier_vi$sigma_alpha)
+quantile(draws_hier_vi$sigma_alpha, c(0.025, 0.975))
+
+# peak age
+mean(draws_hier_vi$peak_age)
+quantile(draws_hier_vi$peak_age, c(0.025, 0.975))
+
+# posterior probabilities
+mean(draws_hier_vi$beta1_gt_0)
+mean(draws_hier_vi$beta2_lt_0)
+```
+
+
+
+```{r}
+mcmc_trace(
+  as_draws_array(fit_hier_hmc$draws(c("mu_alpha", "sigma_alpha", "beta1", "beta2")))
+)
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+fit_hier_hmc$summary(c("mu_alpha", "sigma_alpha", "beta1", "beta2", "peak_age_c"))
+```
+
+
+```{r}
+draws_hier <- fit_hier_hmc$draws(
+  variables = c("mu_alpha", "sigma_alpha", "beta1", "beta2", "peak_age_c"),
+  format = "df"
+)
+```
+
+
+
+```{r}
+draws_hier$peak_age <- draws_hier$peak_age_c + age_mean
+
+mean(draws_hier$peak_age)
+quantile(draws_hier$peak_age, c(0.025, 0.975))
+
+```
+
+
+```{r}
+mean(draws_hier$beta1)
+quantile(draws_hier$beta1, c(0.025, 0.975))
+
+mean(draws_hier$beta2)
+quantile(draws_hier$beta2, c(0.025, 0.975))
+
+mean(draws_hier$sigma_alpha)
+quantile(draws_hier$sigma_alpha, c(0.025, 0.975))
+```
+
+
+```{r}
+mean(draws_hier$beta1 > 0)
+mean(draws_hier$beta2 < 0)
+```
+
+
+
+```{r}
+fit_hier_hmc$diagnostic_summary()
+```
