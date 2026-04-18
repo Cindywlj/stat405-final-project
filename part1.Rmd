@@ -1,0 +1,569 @@
+---
+title: "405finalcode"
+author: "Shiyu Jiang"
+date: "2026-04-18"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(cmdstanr)
+library(MASS)
+library(ggplot2)
+library(bayesplot)
+library(posterior)
+```
+
+#read data
+
+```{r}
+data <- read.csv("data405.csv", stringsAsFactors = FALSE)
+
+data <- subset(
+  data,
+  !is.na(playerName) &
+    !is.na(age) &
+    !is.na(AB) &
+    !is.na(H) &
+    is.finite(age) &
+    is.finite(AB) &
+    is.finite(H) &
+    AB > 0 &
+    H >= 0 &
+    H <= AB
+)
+
+data$playerName <- factor(data$playerName)
+data$player_id <- as.integer(data$playerName)
+
+age_center <- mean(data$age)
+age_scale  <- sd(data$age)
+
+data$age_c  <- as.numeric(scale(data$age, center = TRUE, scale = TRUE))
+data$age_c2 <- data$age_c^2
+
+J <- length(unique(data$player_id))
+
+str(data)
+head(data[, c("playerName", "player_id", "age", "age_c", "age_c2", "AB", "H")])
+
+```
+
+#stan prepare
+
+
+```{r}
+stan_data_simple <- list(
+  N = nrow(data),
+  AB = data$AB,
+  H = data$H,
+  age_c = data$age_c,
+  age_c2 = data$age_c2
+)
+
+stan_data_hier <- list(
+  N = nrow(data),
+  J = J,
+  player = data$player_id,
+  AB = data$AB,
+  H = data$H,
+  age_c = data$age_c,
+  age_c2 = data$age_c2
+)
+```
+
+```{r}
+simple_stan_code <- "
+data {
+  int<lower=1> N;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+
+parameters {
+  real beta0;
+  real beta1;
+  real beta2;
+}
+
+model {
+  vector[N] logit_theta;
+
+  beta0 ~ normal(0, 5);
+  beta1 ~ normal(0, 5);
+  beta2 ~ normal(0, 5);
+
+  logit_theta = beta0 + beta1 * age_c + beta2 * age_c2;
+
+  H ~ binomial_logit(AB, logit_theta);
+}
+
+generated quantities {
+  real peak_age_c;
+  int beta1_gt_0;
+  int beta2_lt_0;
+
+  peak_age_c = -beta1 / (2 * beta2);
+  beta1_gt_0 = beta1 > 0 ? 1 : 0;
+  beta2_lt_0 = beta2 < 0 ? 1 : 0;
+}
+"
+
+writeLines(simple_stan_code, "simple_model.stan")
+mod_simple <- cmdstan_model("simple_model.stan")
+```
+#fit HMC model 1
+
+```{r}
+fit_simple_hmc <- mod_simple$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_simple
+)
+```
+
+
+
+#fit VI
+
+```{r}
+fit_simple_vi_meanfield <- mod_simple$variational(
+  seed = 1,
+  refresh = 500,
+  algorithm = "meanfield",
+  output_samples = 1000,
+  data = stan_data_simple
+)
+
+fit_simple_vi_fullrank <- mod_simple$variational(
+  seed = 1,
+  refresh = 500,
+  algorithm = "fullrank",
+  output_samples = 1000,
+  data = stan_data_simple
+)
+```
+#model1 laplace
+
+```{r}
+fit_simple_laplace <- mod_simple$laplace(
+  seed = 1,
+  data = stan_data_simple
+)
+```
+
+
+#check 4 models
+```{r}
+fit_simple_hmc$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+fit_simple_vi_meanfield$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+fit_simple_vi_fullrank$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+fit_simple_laplace$summary(c("beta0", "beta1", "beta2", "peak_age_c"))
+```
+
+
+#posterior draws
+
+
+```{r}
+draws_simple_hmc <- fit_simple_hmc$draws(
+  variables = c("beta0", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+
+draws_simple_vi_meanfield <- fit_simple_vi_meanfield$draws(
+  variables = c("beta0", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+
+draws_simple_vi_fullrank <- fit_simple_vi_fullrank$draws(
+  variables = c("beta0", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+
+draws_simple_laplace <- fit_simple_laplace$draws(
+  variables = c("beta0", "beta1", "beta2", "peak_age_c", "beta1_gt_0", "beta2_lt_0"),
+  format = "df"
+)
+```
+
+
+#Convert peak age back to the original age scale
+
+
+```{r}
+draws_simple_hmc$peak_age <- age_center + age_scale * draws_simple_hmc$peak_age_c
+draws_simple_vi_meanfield$peak_age <- age_center + age_scale * draws_simple_vi_meanfield$peak_age_c
+draws_simple_vi_fullrank$peak_age <- age_center + age_scale * draws_simple_vi_fullrank$peak_age_c
+draws_simple_laplace$peak_age <- age_center + age_scale * draws_simple_laplace$peak_age_c
+```
+
+
+
+# compare posterior
+
+
+```{r}
+compare_simple_table <- data.frame(
+  method = c("HMC", "VI_meanfield", "VI_fullrank", "Laplace"),
+
+  beta1_mean = c(
+    mean(draws_simple_hmc$beta1),
+    mean(draws_simple_vi_meanfield$beta1),
+    mean(draws_simple_vi_fullrank$beta1),
+    mean(draws_simple_laplace$beta1)
+  ),
+  beta1_low = c(
+    quantile(draws_simple_hmc$beta1, 0.025),
+    quantile(draws_simple_vi_meanfield$beta1, 0.025),
+    quantile(draws_simple_vi_fullrank$beta1, 0.025),
+    quantile(draws_simple_laplace$beta1, 0.025)
+  ),
+  beta1_high = c(
+    quantile(draws_simple_hmc$beta1, 0.975),
+    quantile(draws_simple_vi_meanfield$beta1, 0.975),
+    quantile(draws_simple_vi_fullrank$beta1, 0.975),
+    quantile(draws_simple_laplace$beta1, 0.975)
+  ),
+
+  beta2_mean = c(
+    mean(draws_simple_hmc$beta2),
+    mean(draws_simple_vi_meanfield$beta2),
+    mean(draws_simple_vi_fullrank$beta2),
+    mean(draws_simple_laplace$beta2)
+  ),
+  beta2_low = c(
+    quantile(draws_simple_hmc$beta2, 0.025),
+    quantile(draws_simple_vi_meanfield$beta2, 0.025),
+    quantile(draws_simple_vi_fullrank$beta2, 0.025),
+    quantile(draws_simple_laplace$beta2, 0.025)
+  ),
+  beta2_high = c(
+    quantile(draws_simple_hmc$beta2, 0.975),
+    quantile(draws_simple_vi_meanfield$beta2, 0.975),
+    quantile(draws_simple_vi_fullrank$beta2, 0.975),
+    quantile(draws_simple_laplace$beta2, 0.975)
+  ),
+
+  peak_mean = c(
+    mean(draws_simple_hmc$peak_age),
+    mean(draws_simple_vi_meanfield$peak_age),
+    mean(draws_simple_vi_fullrank$peak_age),
+    mean(draws_simple_laplace$peak_age)
+  ),
+  peak_low = c(
+    quantile(draws_simple_hmc$peak_age, 0.025),
+    quantile(draws_simple_vi_meanfield$peak_age, 0.025),
+    quantile(draws_simple_vi_fullrank$peak_age, 0.025),
+    quantile(draws_simple_laplace$peak_age, 0.025)
+  ),
+  peak_high = c(
+    quantile(draws_simple_hmc$peak_age, 0.975),
+    quantile(draws_simple_vi_meanfield$peak_age, 0.975),
+    quantile(draws_simple_vi_fullrank$peak_age, 0.975),
+    quantile(draws_simple_laplace$peak_age, 0.975)
+  ),
+
+  prob_beta1_gt_0 = c(
+    mean(draws_simple_hmc$beta1_gt_0),
+    mean(draws_simple_vi_meanfield$beta1_gt_0),
+    mean(draws_simple_vi_fullrank$beta1_gt_0),
+    mean(draws_simple_laplace$beta1_gt_0)
+  ),
+  prob_beta2_lt_0 = c(
+    mean(draws_simple_hmc$beta2_lt_0),
+    mean(draws_simple_vi_meanfield$beta2_lt_0),
+    mean(draws_simple_vi_fullrank$beta2_lt_0),
+    mean(draws_simple_laplace$beta2_lt_0)
+  )
+)
+
+compare_simple_table
+```
+
+#HMC diagnostic model 1
+
+
+```{r}
+fit_simple_hmc$diagnostic_summary()
+```
+
+```{r}
+mcmc_trace(
+  as_draws_array(fit_simple_hmc$draws(c("beta0", "beta1", "beta2")))
+)
+```
+
+
+#plots for HMC
+
+```{r}
+method_colors <- c(
+  "HMC" = "black",
+  "VI_fullrank" = "red",
+  "VI_meanfield" = "blue",
+  "Laplace" = "darkgreen"
+)
+
+# beta1
+plot_df_beta1_simple <- data.frame(
+  value = c(
+    draws_simple_hmc$beta1,
+    draws_simple_vi_meanfield$beta1,
+    draws_simple_vi_fullrank$beta1,
+    draws_simple_laplace$beta1
+  ),
+  method = c(
+    rep("HMC", nrow(draws_simple_hmc)),
+    rep("VI_meanfield", nrow(draws_simple_vi_meanfield)),
+    rep("VI_fullrank", nrow(draws_simple_vi_fullrank)),
+    rep("Laplace", nrow(draws_simple_laplace))
+  )
+)
+
+p_beta1 <- ggplot(plot_df_beta1_simple, aes(x = value, color = method, linetype = method)) +
+  geom_density(linewidth = 1) +
+  scale_color_manual(values = method_colors) +
+  labs(
+    title = "Model 1: Posterior comparison for beta1",
+    x = "beta1",
+    y = "Density"
+  )
+
+# beta2
+plot_df_beta2_simple <- data.frame(
+  value = c(
+    draws_simple_hmc$beta2,
+    draws_simple_vi_meanfield$beta2,
+    draws_simple_vi_fullrank$beta2,
+    draws_simple_laplace$beta2
+  ),
+  method = c(
+    rep("HMC", nrow(draws_simple_hmc)),
+    rep("VI_meanfield", nrow(draws_simple_vi_meanfield)),
+    rep("VI_fullrank", nrow(draws_simple_vi_fullrank)),
+    rep("Laplace", nrow(draws_simple_laplace))
+  )
+)
+
+p_beta2 <- ggplot(plot_df_beta2_simple, aes(x = value, color = method, linetype = method)) +
+  geom_density(linewidth = 1) +
+  scale_color_manual(values = method_colors) +
+  labs(
+    title = "Model 1: Posterior comparison for beta2",
+    x = "beta2",
+    y = "Density"
+  )
+
+# peak age
+plot_df_peak_simple <- data.frame(
+  value = c(
+    draws_simple_hmc$peak_age,
+    draws_simple_vi_meanfield$peak_age,
+    draws_simple_vi_fullrank$peak_age,
+    draws_simple_laplace$peak_age
+  ),
+  method = c(
+    rep("HMC", nrow(draws_simple_hmc)),
+    rep("VI_meanfield", nrow(draws_simple_vi_meanfield)),
+    rep("VI_fullrank", nrow(draws_simple_vi_fullrank)),
+    rep("Laplace", nrow(draws_simple_laplace))
+  )
+)
+
+plot_df_peak_simple <- data.frame(
+  value = c(
+    draws_simple_hmc$peak_age,
+    draws_simple_vi_meanfield$peak_age,
+    draws_simple_vi_fullrank$peak_age,
+    draws_simple_laplace$peak_age
+  ),
+  method = c(
+    rep("HMC", nrow(draws_simple_hmc)),
+    rep("VI_meanfield", nrow(draws_simple_vi_meanfield)),
+    rep("VI_fullrank", nrow(draws_simple_vi_fullrank)),
+    rep("Laplace", nrow(draws_simple_laplace))
+  )
+)
+
+plot_df_peak_simple <- subset(plot_df_peak_simple, value >= 15 & value <= 45)
+
+p_peak <- ggplot(plot_df_peak_simple, aes(x = value, color = method, linetype = method)) +
+  geom_density(linewidth = 1) +
+  scale_color_manual(values = method_colors) +
+  labs(
+    title = "Model 1: Posterior comparison for peak age",
+    x = "Peak age",
+    y = "Density"
+  )
+
+
+# show plots
+p_beta1
+p_beta2
+p_peak
+```
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
