@@ -1,0 +1,350 @@
+---
+title: "405 report coding for model and HMC"
+author: "Lijie Wang-37325834"
+date: "2026-04-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(readr)
+library(posterior)
+library(loo)
+```
+
+```{r}
+library(cmdstanr)
+```
+
+
+```{r}
+df <- read_csv("data.csv")
+
+glimpse(df)
+head(df)
+summary(df[, c("age", "AB", "H", "batting_avg")])
+any(df$H > df$AB)
+```
+
+```{r}
+df <- df %>%
+  mutate(
+    player_id = as.integer(factor(playerName)),
+    age_mean = mean(age),
+    age_c = age - age_mean,
+    age_c2 = age_c^2
+  ) %>%
+  arrange(player_id, yearID)
+```
+
+```{r}
+head(df[, c("playerName", "player_id", "yearID", "age", "age_c", "age_c2", "AB", "H")])
+summary(df[, c("age", "age_c", "age_c2")])
+length(unique(df$player_id))
+```
+
+```{r}
+N <- nrow(df)
+J <- length(unique(df$player_id))
+age_mean <- mean(df$age)
+```
+
+```{r}
+#Model 1
+
+stan_data_m1 <- list(
+  N = N,
+  H = df$H,
+  AB = df$AB,
+  age = df$age_c,
+  age2 = df$age_c2
+)
+```
+
+```{r}
+mod1 <- cmdstan_model("model1.stan")
+
+fit1 <- mod1$sample(
+  data = stan_data_m1,
+  seed = 1,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000
+)
+
+fit1$summary(c("beta0", "beta1", "beta2"))
+draws1 <- fit1$draws(c("beta0", "beta1", "beta2"), format = "df")
+```
+
+```{r}
+#Model 2
+
+stan_data_m2 <- list(
+  N = N,
+  J = J,
+  H = df$H,
+  AB = df$AB,
+  player = df$player_id,
+  age = df$age_c,
+  age2 = df$age_c2
+)
+```
+
+```{r}
+mod2 <- cmdstan_model("model2.stan")
+
+fit2 <- mod2$sample(
+  data = stan_data_m2,
+  seed = 1,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000
+)
+
+fit2$summary(c("mu_alpha", "sigma_alpha", "beta1", "beta2"))
+draws2 <- fit2$draws(c("mu_alpha", "sigma_alpha", "beta1", "beta2"), format = "df")
+```
+
+```{r}
+#Prob of the age effect
+mean(draws1$beta1 > 0)
+mean(draws1$beta2 < 0)
+
+mean(draws2$beta1 > 0)
+mean(draws2$beta2 < 0)
+```
+
+```{r}
+draws1$peak_age <- age_mean + (-draws1$beta1 / (2 * draws1$beta2))
+draws2$peak_age <- age_mean + (-draws2$beta1 / (2 * draws2$beta2))
+
+mean(draws1$peak_age)
+quantile(draws1$peak_age, c(0.025, 0.5, 0.975))
+
+mean(draws2$peak_age)
+quantile(draws2$peak_age, c(0.025, 0.5, 0.975))
+```
+
+```{r}
+# whether hierarchical model is justified
+mean(draws2$sigma_alpha)
+quantile(draws2$sigma_alpha, c(0.025, 0.5, 0.975))
+```
+
+```{r}
+# Comparison
+log_lik1 <- fit1$draws("log_lik", format = "matrix")
+log_lik2 <- fit2$draws("log_lik", format = "matrix")
+
+loo1 <- loo(log_lik1)
+loo2 <- loo(log_lik2)
+
+loo_compare(loo1, loo2)
+```
+
+```{r}
+# Diagnostics
+fit1$diagnostic_summary()
+fit2$diagnostic_summary()
+```
+Computation by VI-fullrank
+```{r}
+# Model 1
+fit1_vi <- mod1$variational(
+  data = stan_data_m1,
+  seed = 1,
+  algorithm = "fullrank",
+  iter = 20000,
+  output_samples = 4000
+)
+
+draws1_vi <- fit1_vi$draws(c("beta0", "beta1", "beta2"), format = "df")
+```
+
+```{r}
+# Model 2
+fit2_vi <- mod2$variational(
+  data = stan_data_m2,
+  seed = 1,
+  algorithm = "fullrank",
+  iter = 20000,
+  output_samples = 4000
+)
+
+draws2_vi <- fit2_vi$draws(c("mu_alpha", "sigma_alpha", "beta1", "beta2"), format = "df")
+```
+
+```{r}
+fit1_vi$summary(c("beta0", "beta1", "beta2"))
+fit2_vi$summary(c("mu_alpha", "sigma_alpha", "beta1", "beta2"))
+```
+
+```{r}
+# Age effect
+mean(draws1_vi$beta1 > 0)
+mean(draws1_vi$beta2 < 0)
+
+mean(draws2_vi$beta1 > 0)
+mean(draws2_vi$beta2 < 0)
+```
+```{r}
+# peak age
+draws1_vi$peak_age <- age_mean + (-draws1_vi$beta1 / (2 * draws1_vi$beta2))
+mean(draws1_vi$peak_age)
+quantile(draws1_vi$peak_age, c(0.025, 0.5, 0.975))
+
+draws2_vi$peak_age <- age_mean + (-draws2_vi$beta1 / (2 * draws2_vi$beta2))
+mean(draws2_vi$peak_age)
+quantile(draws2_vi$peak_age, c(0.025, 0.5, 0.975))
+```
+check whether peak age 2 is negative
+```{r}
+summary(draws2_vi$beta2)
+summary (draws2_vi$peak_age)
+```
+```{r}
+mean(draws2_vi$beta2 > 0)
+mean(abs(draws2_vi$beta2) < 0.05)
+
+sum(draws2_vi$peak_age < 0)
+sum(draws2_vi$peak_age > 100)
+```
+
+```{r}
+# hierarchical heterogeneity
+mean(draws2_vi$sigma_alpha)
+quantile(draws2_vi$sigma_alpha, c(0.025, 0.5, 0.975))
+```
+
+Computation by Laplace
+```{r}
+library(rstan)
+```
+```{r}
+stan_mod1 <- stan_model("model1.stan")
+stan_mod2 <- stan_model("model2.stan")
+```
+
+```{r}
+lap1 <- optimizing(
+  object = stan_mod1,
+  data = stan_data_m1,
+  seed = 1,
+  hessian = TRUE,
+  as_vector = FALSE
+)
+
+lap2 <- optimizing(
+  object = stan_mod2,
+  data = stan_data_m2,
+  seed = 1,
+  hessian = TRUE,
+  as_vector = FALSE
+)
+```
+
+Model1
+```{r}
+lap1$par[c("beta0", "beta1", "beta2")]
+dim(lap1$hessian)
+lap1$hessian[1:3, 1:3]
+```
+```{r}
+cov_m1 <- solve(-lap1$hessian)
+cov_m1
+eigen(cov_m1)$values
+```
+
+```{r}
+library(MASS)
+
+mode_m1 <- unlist(lap1$par[c("beta0", "beta1", "beta2")])
+
+set.seed(1)
+draws1_lap <- as.data.frame(
+  MASS::mvrnorm(
+    n = 4000,
+    mu = mode_m1,
+    Sigma = cov_m1
+  )
+)
+
+colnames(draws1_lap) <- c("beta0", "beta1", "beta2")
+
+mean(draws1_lap$beta1 > 0)
+mean(draws1_lap$beta2 < 0)
+
+draws1_lap$peak_age <- age_mean + (-draws1_lap$beta1 / (2 * draws1_lap$beta2))
+
+mean(draws1_lap$peak_age)
+quantile(draws1_lap$peak_age, c(0.025, 0.5, 0.975))
+```
+Model2
+```{r}
+lap2$par[c("mu_alpha", "sigma_alpha", "beta1", "beta2")]
+dim(lap2$hessian)
+lap2$hessian[1:8, 1:8]
+```
+```{r}
+cov_m2 <- solve(-lap2$hessian)
+eigen(cov_m2)$values
+
+keep <- c("mu_alpha", "sigma_alpha", "beta1", "beta2")
+cov_m2_sub <- cov_m2[keep, keep]
+eigen(cov_m2_sub)$values
+```
+
+```{r}
+mode_mu_alpha <- unlist(lap2$par["mu_alpha"])
+mode_sigma_alpha <- unlist(lap2$par["sigma_alpha"])
+mode_beta1 <- unlist(lap2$par["beta1"])
+mode_beta2 <- unlist(lap2$par["beta2"])
+mode_alpha <- unlist(lap2$par["alpha"])
+
+mode_m2 <- c(
+  mu_alpha = mode_mu_alpha,
+  sigma_alpha = mode_sigma_alpha,
+  alpha = mode_alpha,
+  beta1 = mode_beta1,
+  beta2 = mode_beta2
+)
+
+length(mode_m2)
+```
+
+
+```{r}
+#set.seed(1)
+
+#draws2_lap <- as.data.frame(
+  #MASS::mvrnorm(
+    #n = 4000,
+    #mu = mode_m2,
+   # Sigma = cov_m2
+ # )
+#)
+
+#mean(draws2_lap$beta1 > 0)
+#mean(draws2_lap$beta2 < 0)
+
+#draws2_lap$peak_age <- age_mean + (-draws2_lap$beta1 / (2 * draws2_lap$beta2))
+
+#mean(draws2_lap$peak_age)
+#quantile(draws2_lap$peak_age, c(0.025, 0.5, 0.975))
+```
+The fact that the covariance matrix corresponding to the Hessian of the eigenvalues is negative indicates that the local Gaussian approximation itself is unstable for this hierarchical posterior.
+
+
+
+
+
+
+
+
+```
