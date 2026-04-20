@@ -1,0 +1,530 @@
+---
+title: "sensitive analysis"
+author: "Shiyu Jiang"
+date: "2026-04-20"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(cmdstanr)
+
+data <- read.csv("data405.csv", stringsAsFactors = FALSE)
+
+data <- subset(
+  data,
+  !is.na(playerName) &
+    !is.na(age) &
+    !is.na(AB) &
+    !is.na(H) &
+    is.finite(age) &
+    is.finite(AB) &
+    is.finite(H) &
+    AB > 0 &
+    H >= 0 &
+    H <= AB
+)
+
+data$playerName <- factor(data$playerName)
+data$player_id <- as.integer(data$playerName)
+
+age_center <- mean(data$age)
+age_scale  <- sd(data$age)
+
+data$age_c  <- as.numeric(scale(data$age, center = TRUE, scale = TRUE))
+data$age_c2 <- data$age_c^2
+
+J <- length(unique(data$player_id))
+
+stan_data_simple <- list(
+  N = nrow(data),
+  AB = data$AB,
+  H = data$H,
+  age_c = data$age_c,
+  age_c2 = data$age_c2
+)
+
+stan_data_hier <- list(
+  N = nrow(data),
+  J = J,
+  player = data$player_id,
+  AB = data$AB,
+  H = data$H,
+  age_c = data$age_c,
+  age_c2 = data$age_c2
+)
+
+# Model 1: Normal(0,5)
+simple_stan_code_05 <- "
+data {
+  int<lower=1> N;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real beta0;
+  real beta1;
+  real beta2;
+}
+model {
+  vector[N] logit_theta;
+
+  beta0 ~ normal(0, 5);
+  beta1 ~ normal(0, 5);
+  beta2 ~ normal(0, 5);
+
+  logit_theta = beta0 + beta1 * age_c + beta2 * age_c2;
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(simple_stan_code_05, "simple_model_prior_05.stan")
+mod_simple <- cmdstan_model("simple_model_prior_05.stan")
+
+fit_simple_hmc <- mod_simple$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_simple
+)
+
+
+# Model 2: Normal(0,5)
+hier_stan_code_05 <- "
+data {
+  int<lower=1> N;
+  int<lower=1> J;
+  array[N] int<lower=1, upper=J> player;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real mu_alpha;
+  real<lower=0> sigma_alpha;
+  vector[J] alpha_raw;
+  real beta1;
+  real beta2;
+}
+transformed parameters {
+  vector[J] alpha;
+  vector[N] logit_theta;
+
+  alpha = mu_alpha + sigma_alpha * alpha_raw;
+
+  for (n in 1:N) {
+    logit_theta[n] = alpha[player[n]] + beta1 * age_c[n] + beta2 * age_c2[n];
+  }
+}
+model {
+  mu_alpha ~ normal(0, 5);
+  sigma_alpha ~ exponential(1);
+  alpha_raw ~ normal(0, 1);
+  beta1 ~ normal(0, 5);
+  beta2 ~ normal(0, 5);
+
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(hier_stan_code_05, "hier_model_prior_05.stan")
+mod_hier <- cmdstan_model("hier_model_prior_05.stan")
+
+fit_hier_hmc <- mod_hier$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_hier
+)
+
+# Model 1: Normal(0,5)
+simple_stan_code_05 <- "
+data {
+  int<lower=1> N;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real beta0;
+  real beta1;
+  real beta2;
+}
+model {
+  vector[N] logit_theta;
+
+  beta0 ~ normal(0, 5);
+  beta1 ~ normal(0, 5);
+  beta2 ~ normal(0, 5);
+
+  logit_theta = beta0 + beta1 * age_c + beta2 * age_c2;
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(simple_stan_code_05, "simple_model_prior_05.stan")
+mod_simple <- cmdstan_model("simple_model_prior_05.stan")
+
+fit_simple_hmc <- mod_simple$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_simple
+)
+
+
+# Model 2: Normal(0,5)
+hier_stan_code_05 <- "
+data {
+  int<lower=1> N;
+  int<lower=1> J;
+  array[N] int<lower=1, upper=J> player;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real mu_alpha;
+  real<lower=0> sigma_alpha;
+  vector[J] alpha_raw;
+  real beta1;
+  real beta2;
+}
+transformed parameters {
+  vector[J] alpha;
+  vector[N] logit_theta;
+
+  alpha = mu_alpha + sigma_alpha * alpha_raw;
+
+  for (n in 1:N) {
+    logit_theta[n] = alpha[player[n]] + beta1 * age_c[n] + beta2 * age_c2[n];
+  }
+}
+model {
+  mu_alpha ~ normal(0, 5);
+  sigma_alpha ~ exponential(1);
+  alpha_raw ~ normal(0, 1);
+  beta1 ~ normal(0, 5);
+  beta2 ~ normal(0, 5);
+
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(hier_stan_code_05, "hier_model_prior_05.stan")
+mod_hier <- cmdstan_model("hier_model_prior_05.stan")
+
+fit_hier_hmc <- mod_hier$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_hier
+)
+
+# Model 1: Normal(0,2)
+simple_stan_code_02 <- "
+data {
+  int<lower=1> N;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real beta0;
+  real beta1;
+  real beta2;
+}
+model {
+  vector[N] logit_theta;
+
+  beta0 ~ normal(0, 2);
+  beta1 ~ normal(0, 2);
+  beta2 ~ normal(0, 2);
+
+  logit_theta = beta0 + beta1 * age_c + beta2 * age_c2;
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(simple_stan_code_02, "simple_model_prior_02.stan")
+mod_simple_02 <- cmdstan_model("simple_model_prior_02.stan")
+
+fit_simple_hmc_02 <- mod_simple_02$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_simple
+)
+
+
+# Model 1: Normal(0,10)
+simple_stan_code_10 <- "
+data {
+  int<lower=1> N;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real beta0;
+  real beta1;
+  real beta2;
+}
+model {
+  vector[N] logit_theta;
+
+  beta0 ~ normal(0, 10);
+  beta1 ~ normal(0, 10);
+  beta2 ~ normal(0, 10);
+
+  logit_theta = beta0 + beta1 * age_c + beta2 * age_c2;
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(simple_stan_code_10, "simple_model_prior_10.stan")
+mod_simple_10 <- cmdstan_model("simple_model_prior_10.stan")
+
+fit_simple_hmc_10 <- mod_simple_10$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_simple
+)
+
+
+# Model 2: Normal(0,2) for mu_alpha, beta1, beta2
+hier_stan_code_02 <- "
+data {
+  int<lower=1> N;
+  int<lower=1> J;
+  array[N] int<lower=1, upper=J> player;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real mu_alpha;
+  real<lower=0> sigma_alpha;
+  vector[J] alpha_raw;
+  real beta1;
+  real beta2;
+}
+transformed parameters {
+  vector[J] alpha;
+  vector[N] logit_theta;
+
+  alpha = mu_alpha + sigma_alpha * alpha_raw;
+
+  for (n in 1:N) {
+    logit_theta[n] = alpha[player[n]] + beta1 * age_c[n] + beta2 * age_c2[n];
+  }
+}
+model {
+  mu_alpha ~ normal(0, 2);
+  sigma_alpha ~ exponential(1);
+  alpha_raw ~ normal(0, 1);
+  beta1 ~ normal(0, 2);
+  beta2 ~ normal(0, 2);
+
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(hier_stan_code_02, "hier_model_prior_02.stan")
+mod_hier_02 <- cmdstan_model("hier_model_prior_02.stan")
+
+fit_hier_hmc_02 <- mod_hier_02$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_hier
+)
+
+
+# Model 2: Normal(0,10) for mu_alpha, beta1, beta2
+hier_stan_code_10 <- "
+data {
+  int<lower=1> N;
+  int<lower=1> J;
+  array[N] int<lower=1, upper=J> player;
+  array[N] int<lower=0> AB;
+  array[N] int<lower=0> H;
+  vector[N] age_c;
+  vector[N] age_c2;
+}
+parameters {
+  real mu_alpha;
+  real<lower=0> sigma_alpha;
+  vector[J] alpha_raw;
+  real beta1;
+  real beta2;
+}
+transformed parameters {
+  vector[J] alpha;
+  vector[N] logit_theta;
+
+  alpha = mu_alpha + sigma_alpha * alpha_raw;
+
+  for (n in 1:N) {
+    logit_theta[n] = alpha[player[n]] + beta1 * age_c[n] + beta2 * age_c2[n];
+  }
+}
+model {
+  mu_alpha ~ normal(0, 10);
+  sigma_alpha ~ exponential(1);
+  alpha_raw ~ normal(0, 1);
+  beta1 ~ normal(0, 10);
+  beta2 ~ normal(0, 10);
+
+  H ~ binomial_logit(AB, logit_theta);
+}
+generated quantities {
+  real peak_age_c;
+  peak_age_c = -beta1 / (2 * beta2);
+}
+"
+
+writeLines(hier_stan_code_10, "hier_model_prior_10.stan")
+mod_hier_10 <- cmdstan_model("hier_model_prior_10.stan")
+
+fit_hier_hmc_10 <- mod_hier_10$sample(
+  seed = 1,
+  refresh = 500,
+  chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  data = stan_data_hier
+)
+
+
+prior_sensitivity_table <- data.frame(
+  model = c("Model 1", "Model 1", "Model 1",
+            "Model 2", "Model 2", "Model 2"),
+  prior = c("Normal(0,2)", "Normal(0,5)", "Normal(0,10)",
+            "Normal(0,2)", "Normal(0,5)", "Normal(0,10)"),
+
+  beta1_mean = c(
+    fit_simple_hmc_02$summary("beta1")$mean,
+    fit_simple_hmc$summary("beta1")$mean,
+    fit_simple_hmc_10$summary("beta1")$mean,
+    fit_hier_hmc_02$summary("beta1")$mean,
+    fit_hier_hmc$summary("beta1")$mean,
+    fit_hier_hmc_10$summary("beta1")$mean
+  ),
+  beta1_low = c(
+    fit_simple_hmc_02$summary("beta1")$q5,
+    fit_simple_hmc$summary("beta1")$q5,
+    fit_simple_hmc_10$summary("beta1")$q5,
+    fit_hier_hmc_02$summary("beta1")$q5,
+    fit_hier_hmc$summary("beta1")$q5,
+    fit_hier_hmc_10$summary("beta1")$q5
+  ),
+  beta1_high = c(
+    fit_simple_hmc_02$summary("beta1")$q95,
+    fit_simple_hmc$summary("beta1")$q95,
+    fit_simple_hmc_10$summary("beta1")$q95,
+    fit_hier_hmc_02$summary("beta1")$q95,
+    fit_hier_hmc$summary("beta1")$q95,
+    fit_hier_hmc_10$summary("beta1")$q95
+  ),
+
+  beta2_mean = c(
+    fit_simple_hmc_02$summary("beta2")$mean,
+    fit_simple_hmc$summary("beta2")$mean,
+    fit_simple_hmc_10$summary("beta2")$mean,
+    fit_hier_hmc_02$summary("beta2")$mean,
+    fit_hier_hmc$summary("beta2")$mean,
+    fit_hier_hmc_10$summary("beta2")$mean
+  ),
+  beta2_low = c(
+    fit_simple_hmc_02$summary("beta2")$q5,
+    fit_simple_hmc$summary("beta2")$q5,
+    fit_simple_hmc_10$summary("beta2")$q5,
+    fit_hier_hmc_02$summary("beta2")$q5,
+    fit_hier_hmc$summary("beta2")$q5,
+    fit_hier_hmc_10$summary("beta2")$q5
+  ),
+  beta2_high = c(
+    fit_simple_hmc_02$summary("beta2")$q95,
+    fit_simple_hmc$summary("beta2")$q95,
+    fit_simple_hmc_10$summary("beta2")$q95,
+    fit_hier_hmc_02$summary("beta2")$q95,
+    fit_hier_hmc$summary("beta2")$q95,
+    fit_hier_hmc_10$summary("beta2")$q95
+  ),
+
+  sigma_alpha_mean = c(
+    NA,
+    NA,
+    NA,
+    fit_hier_hmc_02$summary("sigma_alpha")$mean,
+    fit_hier_hmc$summary("sigma_alpha")$mean,
+    fit_hier_hmc_10$summary("sigma_alpha")$mean
+  ),
+
+  peak_age_mean = c(
+    age_center + age_scale * fit_simple_hmc_02$summary("peak_age_c")$mean,
+    age_center + age_scale * fit_simple_hmc$summary("peak_age_c")$mean,
+    age_center + age_scale * fit_simple_hmc_10$summary("peak_age_c")$mean,
+    age_center + age_scale * fit_hier_hmc_02$summary("peak_age_c")$mean,
+    age_center + age_scale * fit_hier_hmc$summary("peak_age_c")$mean,
+    age_center + age_scale * fit_hier_hmc_10$summary("peak_age_c")$mean
+  )
+)
+
+prior_sensitivity_table
+```
